@@ -1,0 +1,54 @@
+{
+  "name": "error-workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -64,
+        -32
+      ],
+      "id": "0566bcd9-447c-4086-8c6b-9c7f08e09754",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "errorMessage": "The error workflow is triggered"
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        144,
+        -32
+      ],
+      "id": "0e157c72-3e79-4469-a5fa-9e3834d28201",
+      "name": "Stop and Error"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "55882532-4020-4673-b4d6-ac40288c2732",
+  "meta": {
+    "instanceId": "548b96e9fcfb26b9e08cfb529f19ee71c65324bc036989bdf778a580ceb2dd32"
+  },
+  "id": "7_FMgMBaM5v9e6j-fiK-m",
+  "tags": []
+}

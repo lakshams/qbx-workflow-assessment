@@ -1,0 +1,692 @@
+{
+  "name": "workflow.json",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:4010/chat.postMessage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer slack-test-token"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "channel",
+              "value": "#oncall-alerts"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.message }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3214c684-89af-4938-82de-365767db0832",
+      "name": "Slack Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -640,
+        320
+      ],
+      "retryOnFail": false,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:4020/me/sendMail",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer ms-test-token"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "message.subject",
+              "value": "=={{'Incident Alert - ' + $json.incidentId}}"
+            },
+            {
+              "name": "=message.body.contentType",
+              "value": "Text"
+            },
+            {
+              "name": "message.body.content",
+              "value": "=={{$json.message}}"
+            },
+            {
+              "name": "message.toRecipients[0].emailAddress.address",
+              "value": "=={{$json.ownerEmail}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ed288320-5771-40cf-ad1d-37eb8e1afbe3",
+      "name": "O365 Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -640,
+        592
+      ],
+      "retryOnFail": false,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get all incoming items (n8n standard)\nconst items = $input.all();\n\n// Required fields\nconst requiredFields = [\"incidentId\", \"severity\", \"title\", \"createdAt\"];\n\n// Severity mapping\nconst severityMap = {\n  P1: 1,\n  P2: 2,\n  P3: 3,\n  P4: 4\n};\n\nreturn items.map((item) => {\n  const body = item.json.body;\n\n  // 1) Validate body\n  if (!body || typeof body !== \"object\") {\n    throw new Error(\"Request body is missing\");\n  }\n\n  // 2) Validate required fields\n  const missingFields = requiredFields.filter((f) => !body[f]);\n  if (missingFields.length > 0) {\n    // Join names so you see exactly which are missing\n    const fields = missingFields.join(\", \");\n    throw new Error(`Missing required field(s): ${fields}`);\n  }\n\n  // 3) Validate & map severity\n  const severityLevel = severityMap[body.severity];\n  if (!severityLevel) {\n    throw new Error(`Validation failed: Invalid severity value: ${body.severity}`);\n  }\n\n  // 4) Truncate description to 240 chars (if present)\n  let description = body.description || \"\";\n  if (typeof description === \"string\" && description.length > 240) {\n    description = description.substring(0, 240);\n  }\n\n  // 5) Generate dedupeKey\n  const dedupeKey = `${body.incidentId}-${body.createdAt}`;\n\n  // 6) Build normalized incident object\n  const normalized = {\n    incidentId: body.incidentId,\n    severity: body.severity,\n    severityLevel,\n    title: body.title,\n    description,\n    createdAt: body.createdAt,\n    ownerEmail: body.ownerEmail,\n    sourceSystem: body.sourceSystem,\n    storeId: body.storeId,\n    metadata: body.metadata,\n    dedupeKey\n  };\n\n  // Return in n8n item format\n  return { json: normalized };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1312,
+        448
+      ],
+      "id": "8a9f974b-2ad0-4c49-a564-6f122e120e47",
+      "name": "Normalize Incident"
+    },
+    {
+      "parameters": {
+        "jsCode": "const incident = $json;\n\nconst message = `🚨 Incident Alert\n\nID: ${incident.incidentId}\nSeverity: ${incident.severity}\nTitle: ${incident.title}\n\nDescription:\n${incident.description}\n\nCreated At: ${incident.createdAt}`;\n\n// initialize retry counter\nconst retryCount = 1;\n\nreturn [\n  {\n    json: {\n      ...incident,\n      message,\n      retryCount\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1088,
+        448
+      ],
+      "id": "fd1036b7-69f2-4291-ad99-70c300d9b6dc",
+      "name": "Format Message"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $json;\n\n// persistent workflow storage\nconst store = $getWorkflowStaticData('global');\n\nif (!store.processedIncidents) {\n  store.processedIncidents = {};\n}\n\nconst key = data.dedupeKey;\n\n// if duplicate, stop workflow\nif (store.processedIncidents[key]) {\n  console.log(`Duplicate detected: ${key}`);\n  return [];   // stops downstream nodes\n}\n\n// store new key\nstore.processedIncidents[key] = true;\n\nreturn [{ json: data }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        448
+      ],
+      "id": "5cbd5c2b-ade1-4262-85b0-5b27eada97de",
+      "name": "Dedupe Code"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "incident",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a08a98cb-3d0e-47e9-a4b9-b1bc48665863",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        448
+      ],
+      "webhookId": "4f5aef31-4dfc-456e-b63c-941aa45ff2b1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1b276c53-0bfb-450d-b9c5-e6d7e8bb2aef",
+              "leftValue": "={{ $json.error.status }}",
+              "rightValue": 429,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "b2b03184-4605-4f43-a8b4-f25397175de4",
+              "leftValue": "={{ $json.error.status }}",
+              "rightValue": 500,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -464,
+        192
+      ],
+      "id": "722acc5b-66d3-423c-98be-d98f0604d074",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "amount": "={{$json.retryCount * 2}}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        256,
+        304
+      ],
+      "id": "f8e6e617-1c9e-45d7-aba0-ac8a185488c2",
+      "name": "Wait",
+      "webhookId": "69627b31-e61f-4d93-8fdc-ed6aa330b5db"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c95dc54e-18f1-49f5-80a0-712f5a9ea173",
+              "leftValue": "={{$json.retryCount}}",
+              "rightValue": 5,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -192,
+        160
+      ],
+      "id": "9ea39b1e-9ccc-4005-8f96-b8875c6305e5",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  ...$json,\n  retryCount: ($json.retryCount || 0) + 1\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        240
+      ],
+      "id": "d0137871-cb6a-48da-b3bb-120aeec4c403",
+      "name": "Increment Counter"
+    },
+    {
+      "parameters": {
+        "amount": "={{$json.retryCount * 2}}"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        352,
+        688
+      ],
+      "id": "1f81fa3e-11c1-4aae-b718-81fbf1dedbf8",
+      "name": "Wait1",
+      "webhookId": "69627b31-e61f-4d93-8fdc-ed6aa330b5db"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c95dc54e-18f1-49f5-80a0-712f5a9ea173",
+              "leftValue": "={{$json.retryCount}}",
+              "rightValue": 5,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -96,
+        544
+      ],
+      "id": "f0476d8a-09ec-4bc5-8e11-eccae1d31130",
+      "name": "If3"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  ...$json,\n  retryCount: ($json.retryCount || 0) + 1\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        624
+      ],
+      "id": "e3f5a473-0cd7-4a46-8950-e1694cee9851",
+      "name": "Increment Counter1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1b276c53-0bfb-450d-b9c5-e6d7e8bb2aef",
+              "leftValue": "={{ $json.error.status }}",
+              "rightValue": 429,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "b2b03184-4605-4f43-a8b4-f25397175de4",
+              "leftValue": "={{ $json.error.status }}",
+              "rightValue": 500,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -368,
+        528
+      ],
+      "id": "fd13c5ac-dc56-4172-94a5-86a1f9ae6a42",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  incidentId: $json.incidentId,\n  dedupeKey: $json.dedupeKey,\n  retryCount: $json.retryCount,\n  failedService: \"slack\",\n  failedAt: new Date().toISOString(),\n  message: $json.message\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c00b9042-b7e0-45ca-931d-1ef5d5cc3f4f",
+      "name": "Build Failure Record"
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "61493deb-00c5-49e9-9ea0-1ce94f2a15eb",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/node/.n8n/incident-failures.json",
+        "options": {
+          "append": true
+        }
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        400,
+        0
+      ],
+      "id": "196e9800-323b-4439-a749-241eb87a4646",
+      "name": "Write Files from Disk"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  incidentId: $json.incidentId,\n  dedupeKey: $json.dedupeKey,\n  retryCount: $json.retryCount,\n  failedService: \"O365 Email\",\n  failedAt: new Date().toISOString(),\n  message: $json.message\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        496
+      ],
+      "id": "585c1d25-bfa0-46ee-9d46-251bdc4e5055",
+      "name": "Build Failure Record1"
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        496,
+        496
+      ],
+      "id": "dedf977e-7250-473f-b1a7-1c99961065c0",
+      "name": "Convert to File1"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/node/.n8n/incident-failures.json",
+        "options": {
+          "append": true
+        }
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        688,
+        496
+      ],
+      "id": "7b2d3ad2-22d8-475c-9841-126dc5dcd763",
+      "name": "Write Files from Disk1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Normalize Incident": {
+      "main": [
+        [
+          {
+            "node": "Format Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Message": {
+      "main": [
+        [
+          {
+            "node": "Dedupe Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe Code": {
+      "main": [
+        [
+          {
+            "node": "Slack Notify",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "O365 Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Notify": {
+      "main": [
+        [],
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "O365 Email": {
+      "main": [
+        [],
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Slack Notify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If2": {
+      "main": [
+        [
+          {
+            "node": "Increment Counter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Counter": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If3": {
+      "main": [
+        [
+          {
+            "node": "Increment Counter1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Record1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Counter1": {
+      "main": [
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait1": {
+      "main": [
+        [
+          {
+            "node": "O365 Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "If3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Failure Record": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Write Files from Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Failure Record1": {
+      "main": [
+        [
+          {
+            "node": "Convert to File1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File1": {
+      "main": [
+        [
+          {
+            "node": "Write Files from Disk1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": -1,
+    "errorWorkflow": "7_FMgMBaM5v9e6j-fiK-m"
+  },
+  "versionId": "14934f62-a7c1-4020-838a-701ce90a2934",
+  "meta": {
+    "instanceId": "548b96e9fcfb26b9e08cfb529f19ee71c65324bc036989bdf778a580ceb2dd32"
+  },
+  "id": "PCa1U_rb9WvEwRM0r1tmT",
+  "tags": []
+}
